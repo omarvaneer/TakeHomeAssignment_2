@@ -1,0 +1,236 @@
+close all;
+clear all;
+clc;
+%% Question One
+%data generatiom
+n = 2;
+
+%Define data
+data.train20.N = 20;
+data.train200.N = 200;
+data.train2000.N = 2000;
+data.vali10000.N = 10000;
+allData=fieldnames(data);
+
+%class 0 parameters
+mu(:,1) = [3;0]; covarMat(:,:,1) = [2 0; 0 1];
+mu(:,2) = [0;3]; covarMat(:,:,2) = [1 0; 0 2];
+mixCofficients = [.5 .5];
+
+
+%class 1 parameter (one gaussian)
+mu(:,3) = [2;2]; covarMat(:,:,3) = [1 0; 0 1];
+
+%class priors
+classPriors = [.65,.35];
+
+for whatDataSet = 1 : length(allData)
+    
+    %generate labels and samples for each data set
+    data.(allData{whatDataSet}).labels = rand(1,data.(allData{whatDataSet}).N) >= classPriors(1);
+    data.(allData{whatDataSet}).Nc = [length(find(data.(allData{whatDataSet}).labels==0)),length(find(data.(allData{whatDataSet}).labels==1))];
+    data.(allData{whatDataSet}).samp = zeros(n,data.(allData{whatDataSet}).N);
+    data.(allData{whatDataSet}).phat = [data.(allData{whatDataSet}).Nc(1)/data.(allData{whatDataSet}).N, ...
+        data.(allData{whatDataSet}).Nc(2)/data.(allData{whatDataSet}).N];
+    
+    for i = 1:data.(allData{whatDataSet}).N
+        %class 0 samples
+        if data.(allData{whatDataSet}).labels(i) == 0
+            if(rand(1,1) > mixCofficients(1)) == 0
+                data.(allData{whatDataSet}).samp(:,i) = mvnrnd(mu(:,1),covarMat(:,:,1),1)';
+            else
+                data.(allData{whatDataSet}).samp(:,i) = mvnrnd(mu(:,2),covarMat(:,:,2),1)';
+            end
+        end
+    end
+    
+    %generate samples for class 1
+    data.(allData{whatDataSet}).samp(:,data.(allData{whatDataSet}).labels==1) = mvnrnd(mu(:,3),covarMat(:,:,3),data.(allData{whatDataSet}).Nc(2))';
+    figure(whatDataSet);
+    
+    %plot the data
+    plot(data.(allData{whatDataSet}).samp(1,data.(allData{whatDataSet}).labels == 0), ...
+        data.(allData{whatDataSet}).samp(2,data.(allData{whatDataSet}).labels==0),'o', ...
+        data.(allData{whatDataSet}).samp(1,data.(allData{whatDataSet}).labels == 1), ...
+        data.(allData{whatDataSet}).samp(2,data.(allData{whatDataSet}).labels==1),'+');
+    title("Class 0 vs. Class 1 for " + data.(allData{whatDataSet}).N + " samples")
+    xlabel('x1'); ylabel('x2');
+    legend('Class 0', 'Class 1');
+end
+%% Question One Part One
+%evaluate the probabilty og x for each class
+pxClass0 = .5*evalGaussianPDF(data.vali10000.samp,mu(:,1),covarMat(:,:,1))+ ...
+    .5*evalGaussianPDF(data.vali10000.samp,mu(:,2),covarMat(:,:,2));
+
+pxClass1 =  evalGaussian(data.vali10000.samp,mu(:,3),covarMat(:,:,3));
+
+%evaluate the discrimant scores
+discriminant = log(pxClass1./pxClass0);
+
+%get the prob. of false label, true label, and overall error for different
+%threshold values
+[falseLabel,trueLabel,error,thresholds] = ROCcurve(discriminant, data.vali10000.labels);
+
+%find the place with the minimum amount of error and store its index
+[minErr, minInd] = min(error);
+
+%find the point on the ROC curve that minimzes error
+minFalse = falseLabel(minInd); minTrue = trueLabel(minInd);
+
+%using said index, find the threshold that yields the minimum amount of
+%error
+theorticalMinThreshold = classPriors(1)/classPriors(2);
+actualMinThreshold = exp(thresholds(minInd));
+
+%calculate theortical values for minimum
+theorMin = (discriminant >= log(classPriors(1)/classPriors(2)));
+theorFalse = sum(theorMin == 1 & data.vali10000.labels == 0)/data.vali10000.Nc(1);
+theorTrue = sum(theorMin == 1 & data.vali10000.labels == 1)/data.vali10000.Nc(2);
+theorErr = theorFalse*classPriors(1) + (1-theorTrue)*classPriors(2);
+
+%plot ROC curve, calculated minimum, and theortical minimum
+figure(5); plot(falseLabel,trueLabel,'-', minFalse, minTrue, 'ro',theorFalse,theorTrue,'g+');
+title('ROC Curve')
+xlabel('Probability of false alarm'); ylabel('Probability of true label');
+legend('ROC Curve', 'Calculated minimum error', 'Theortical Minimum Error');
+
+%% Question One Part Two
+%Based off Summer 2 2020 solution
+options=optimset('MaxFunEvals',3000,'MaxIter',1000);
+
+for whatData = 1 : (length(allData) -1)
+    
+    %calculation of linear logistic fit
+    linear.x=[ones(1,data.(allData{whatData}).N); data.(allData{whatData}).samp];
+    linear.init=zeros(n+1,1);
+    
+    
+    [lin.theta,lin.cost]= fminsearch(@(theta)(costFun(theta,linear.x,data.(allData{whatData}).labels)),...
+        linear.init,options);
+    linear.discriminant = lin.theta'*[ones(1,data.vali10000.N); data.vali10000.samp];
+    
+    %calculate the error based off deciosns vs true labels
+    gamma = 0;
+    linear.prob=CalcProb(linear.discriminant,gamma,data.vali10000.labels,...
+        data.vali10000.Nc(1),data.vali10000.Nc(2),data.vali10000.phat);
+    
+    figure, clf,
+    mShapes = 'o+x';
+    mColors = 'rg';
+    for d = 0:1 % each decision option
+        for l = 0:1 % each class label
+            ind_dl = find(linear.prob.decisions==d & data.vali10000.labels==l);
+            if d == l
+                plot(data.vali10000.samp(1,ind_dl),data.vali10000.samp(2,ind_dl),strcat(mShapes(l+1),mColors(2))); hold on; axis equal;
+            else
+                plot(data.vali10000.samp(1,ind_dl),data.vali10000.samp(2,ind_dl),strcat(mShapes(l+1),mColors(1))); hold on; axis equal;
+            end
+        end
+    end
+    %plot decisions and print the amount of error for linear
+    title("Decisions vs. True Labels, Linear Logistic for " + data.(allData{whatData}).N + " samples")
+    xlabel('x1'); ylabel('x2');
+    fprintf('The amount of error for linear %f samples was %f\n',data.(allData{whatData}).N, linear.prob.error);
+    
+    
+    %calculation of of quadrtic logitic fit
+    quadratic.x=[ones(1,data.(allData{whatData}).N); data.(allData{whatData}).samp; ...
+        data.(allData{whatData}).samp(1,:).^2; data.(allData{whatData}).samp(1,:).*data.(allData{whatData}).samp(2,:); ...
+        data.(allData{whatData}).samp(2,:).^2];
+    
+    quadratic.init=zeros(2*(n+1),1);
+    [quadratic.theta,quadratic.cost]= fminsearch(@(theta)(costFun(theta,quadratic.x,data.(allData{whatData}).labels)),...
+        quadratic.init,options);
+    quadratic.discriminant = quadratic.theta'*[ones(1,data.vali10000.N); data.vali10000.samp; ...
+        data.vali10000.samp(1,:).^2; data.vali10000.samp(1,:) .* data.vali10000.samp(2,:); ...
+        data.vali10000.samp(2,:).^2];
+    
+    %calculate the error based off deciosns vs true labels
+    gamma = 0;
+    quadratic.prob=CalcProb(quadratic.discriminant,gamma,data.vali10000.labels,...
+        data.vali10000.Nc(1),data.vali10000.Nc(2),data.vali10000.phat);
+    
+    figure, clf,
+    mShapes = 'o+x';
+    mColors = 'rg';
+    for d = 0:1 % each decision option
+        for l = 0:1 % each class label
+            ind_dl = find(quadratic.prob.decisions==d & data.vali10000.labels==l);
+            if d == l
+                plot(data.vali10000.samp(1,ind_dl),data.vali10000.samp(2,ind_dl),strcat(mShapes(l+1),mColors(2))); hold on; axis equal;
+            else
+                plot(data.vali10000.samp(1,ind_dl),data.vali10000.samp(2,ind_dl),strcat(mShapes(l+1),mColors(1))); hold on; axis equal;
+            end
+        end
+    end
+    %plot the decions for quadtric logistic fit and the assoicated error
+    title("Decisions vs. True Labels, Quadratic Logistic for " + data.(allData{whatData}).N + " samples")
+    xlabel('x1'); ylabel('x2');
+    fprintf('The amount of error for quadratic %f samples was %f\n',data.(allData{whatData}).N, quadratic.prob.error);
+end
+
+%% Question 2
+%clear; close all; clc;
+
+%get data using function
+nT = 1000;
+nV = 10000;
+[xTr,yTr,xVL,yVL] = hw2q2(nT,nV);
+
+%get the x1 and x2 training and validation samples
+x1T = xTr(1,:);
+x2T = xTr(2,:);
+x1VL = xVL(1,:);
+x2VL = xVL(2,:);
+
+%create the subic polynomial vector for validation and training set
+bOfxT = [ones(1,nT); x1T; x2T; x1T.^2; x1T.*x2T; x2T.^2; x1T.^3; x1T.^2 .* x2T;x1T.*x2T.^2;x2T.^3];
+bOfVL = [ones(1,nV); x1VL; x2VL; x1VL.^2; x1VL.*x2VL; x2VL.^2; x1VL.^3; x1VL.^2 .* x2VL;x1VL.*x2VL.^2;x2VL.^3];
+
+%calculate R, Q, and W based off formula derived in class
+R = (bOfxT * bOfxT')/nT;
+Q = (bOfxT * yTr')/nT;
+w = inv(R)*Q;
+
+%calculate mean squared error
+MSE = mean((yVL - w'*bOfVL).^2);
+
+%MAP Estimate. Same prodecure has above but create a gamma variable 
+gamma = [-7:.1:4];
+w2=zeros(10,length(gamma));
+MSE2=zeros(10,length(gamma));
+parameter = zeros(1, length(gamma));
+sigma  = 1; 
+figure;
+for i = 1 : length(gamma)
+    parameter(i) = (sigma^2)/(nT*(10^gamma(i)));
+    w2(:,i) = inv(R+parameter(i)*eye(10))*Q;
+    MSE2(:,i) = mean((yVL - w2(:,i)'*bOfVL).^2);
+    plot(gamma(i),MSE2(:,i),'b.',gamma(i),MSE,'r.');
+    hold on;
+    title('MSE vs Gamma')
+    xlabel('log(gamma)'); ylabel('MSE');
+    legend('MAP Estimator', 'ML Estimator');
+
+end
+
+%%  Function
+%%Function based off of Summer 2 2020 solution
+function cost=costFun(theta,x,labels)
+h=1./(1+exp(-x'*theta));
+cost=-1/length(h)*sum((labels'.*log(h)+(1-labels)'.*(log(1-h))));
+end
+
+%%
+%%Function based off of Summer 2 2020 solution
+function prob=CalcProb(discScore,logGamma,labels,N0,N1,phat)
+for ind=1:length(logGamma)
+    prob.decisions=discScore>=logGamma(ind);
+    Num_pos(ind)=sum(prob.decisions);
+    prob.p10(ind)=sum(prob.decisions==1 & labels==0)/N0;
+    prob.p11(ind)=sum(prob.decisions==1 & labels==1)/N1;
+    prob.p01(ind)=sum(prob.decisions==0 & labels==1)/N1;
+    prob.p00(ind)=sum(prob.decisions==0 & labels==0)/N0;
+    prob.error(ind)=prob.p10(ind)*phat(1) + prob.p01(ind)*phat(2);
+end
+end
